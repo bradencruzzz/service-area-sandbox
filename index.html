@@ -1,175 +1,235 @@
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
-<script>
-// 1) Set your full Worker URL (ABSOLUTE, not relative)
-const WORKER_URL = "https://billowing-block-3cb1.bzcruzzz05.workers.dev";  // <-- FIX ME
-
-const map = L.map('map').setView([37.95, -77.5], 8);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-
-const maxPoints = 10;
-let points = []; // {lat,lng, marker, id}
-const layersByBand = {30:null,45:null,60:null};
-const sameHue = '#2aaeea';
-const fillStyles = {
-  30: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.35 },
-  45: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.25 },
-  60: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.18 }
-};
-
-function makeId() { return Math.random().toString(36).slice(2,9); }
-
-// --- ADD POINT: click map
-map.on('click', (e) => {
-  if (points.length >= maxPoints) { alert('Max 10 points'); return; }
-
-  // Use draggable Marker instead of circleMarker
-  const marker = L.marker(e.latlng, { draggable: true }).addTo(map);
-  const id = makeId();
-
-  // Remove on click
-  marker.on('click', (ev) => {
-    ev.originalEvent?.stopPropagation?.(); // don’t bubble to map
-    removePointById(id);
-  });
-
-  // Update coords on drag
-  marker.on('dragend', (ev) => {
-    const { lat, lng } = ev.target.getLatLng();
-    const p = points.find(p => p.id === id);
-    if (p) {
-      p.lat = lat; p.lng = lng;
-      updateChips();
-      // Optional: auto-recalc after drag
-      // recalc();
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Concrete Service Area Sandbox</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body, #map { height: 100vh; margin: 0; }
+    .panel {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: #fff; padding: 10px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15); width: 300px; font: 13px system-ui, sans-serif;
     }
-  });
+    .panel h3 { margin: 0 0 8px; font-size: 14px; }
+    .row { margin: 6px 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { background: #eef; border: 1px solid #99c; border-radius: 999px; padding: 2px 8px; cursor: pointer; }
+    .muted { color:#666; font-size:12px; }
+    button { cursor:pointer; }
+  </style>
+</head>
+<body>
+  <!-- Map container -->
+  <div id="map"></div>
 
-  points.push({ id, lat: e.latlng.lat, lng: e.latlng.lng, marker });
-  updateChips();
-});
+  <!-- Control panel -->
+  <div class="panel">
+    <h3>Service Area Sandbox</h3>
+    <div class="row">
+      <b>How to:</b> Click the map to add a plant (max 10). Click a marker to remove it. Drag markers to move.
+    </div>
+    <div class="row">
+      <label>Time of day: <span id="timeLabel">09:00</span></label><br/>
+      <input id="timeSlider" type="range" min="0" max="1439" value="540" step="1" style="width:100%">
+    </div>
+    <div class="row">
+      <label>Drive-time bands:</label><br/>
+      <label><input type="checkbox" class="band" value="30" checked> 30 min</label>
+      <label><input type="checkbox" class="band" value="45" checked> 45 min</label>
+      <label><input type="checkbox" class="band" value="60" checked> 60 min</label>
+    </div>
+    <div class="row">
+      <button id="recalcBtn">Recalculate</button>
+      <span id="status" class="muted"></span>
+    </div>
+    <div class="row">
+      <div>Points (<span id="count">0</span>/10):</div>
+      <div id="pointChips" class="chips"></div>
+    </div>
+  </div>
 
-// --- REMOVE POINT helper
-function removePointById(id) {
-  const idx = points.findIndex(p => p.id === id);
-  if (idx >= 0) {
-    points[idx].marker.remove();
-    points.splice(idx,1);
-    updateChips();
-  }
-}
+  <!-- Leaflet + Turf -->
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script defer src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
-// --- Chips UI (also removable)
-function updateChips() {
-  document.getElementById('count').textContent = points.length;
-  const el = document.getElementById('pointChips'); el.innerHTML = '';
-  points.forEach((p) => {
-    const c = document.createElement('div'); c.className = 'chip';
-    c.textContent = `${p.lat.toFixed(4)}, ${p.lng.toFixed(4)} ✕`;
-    c.onclick = () => removePointById(p.id);
-    el.appendChild(c);
-  });
-}
+  <!-- Your app script -->
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    // 1) Set your full Worker URL (ABSOLUTE, not relative)
+    const WORKER_URL = "https://billowing-block-3cb1.bzcruzzz05.workers.dev";  // <-- put your workers.dev URL here
 
-function minutesToHM(m) {
-  const hh = Math.floor(m/60).toString().padStart(2,'0');
-  const mm = (m%60).toString().padStart(2,'0');
-  return `${hh}:${mm}`;
-}
+    const map = L.map('map').setView([37.95, -77.5], 8);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
 
-const timeSlider = document.getElementById('timeSlider');
-const timeLabel  = document.getElementById('timeLabel');
-timeLabel.textContent = minutesToHM(+timeSlider.value);
-timeSlider.oninput = () => timeLabel.textContent = minutesToHM(+timeSlider.value);
-
-function selectedBands() {
-  return Array.from(document.querySelectorAll('.band:checked')).map(b => +b.value).sort((a,b)=>a-b);
-}
-
-function buildISOForToday(minutes) {
-  const now = new Date();
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(minutes/60), minutes%60, 0);
-  return d.toISOString();
-}
-
-document.getElementById('recalcBtn').onclick = recalc;
-
-// --- Recalculate bands
-async function recalc() {
-  const status = document.getElementById('status');
-  if (points.length === 0) { status.textContent = 'Add points first.'; return; }
-  const bands = selectedBands();
-  status.textContent = 'Computing…';
-
-  try {
-    const body = {
-      arrivals: points.map(p => ({lat:p.lat, lng:p.lng})),
-      minutes: bands,
-      iso: buildISOForToday(+timeSlider.value)
+    const maxPoints = 10;
+    let points = []; // {lat,lng, marker, id}
+    const layersByBand = {30:null,45:null,60:null};
+    const sameHue = '#2aaeea';
+    const fillStyles = {
+      30: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.35 },
+      45: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.25 },
+      60: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.18 }
     };
 
-    // IMPORTANT: POST to the absolute Worker URL
-    const r = await fetch(WORKER_URL, {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify(body)
-    });
-    if (!r.ok) throw new Error(await r.text());
-    const data = await r.json();
+    function makeId() { return Math.random().toString(36).slice(2,9); }
 
-    // group polygons by band
-    const byBand = {}; bands.forEach(m => byBand[m] = []);
-    for (const res of (data.results||[])) {
-      const id = res.search_id;
-      const band = parseInt(id.split("_")[1]?.replace("min",""),10);
-      if (!bands.includes(band)) continue;
-      for (const s of res.shapes||[]) {
-        const shell = s.shell.map(p => [p.lng, p.lat]);
-        const holes = (s.holes||[]).map(h => h.map(p => [p.lng, p.lat]));
-        byBand[band].push(turf.polygon([shell, ...holes]));
+    // --- ADD POINT: click map
+    map.on('click', (e) => {
+      if (points.length >= maxPoints) { alert('Max 10 points'); return; }
+      // Use draggable Marker instead of circleMarker
+      const marker = L.marker(e.latlng, { draggable: true }).addTo(map);
+      const id = makeId();
+
+      // Remove on click
+      marker.on('click', (ev) => {
+        ev.originalEvent?.stopPropagation?.(); // don’t bubble to map
+        removePointById(id);
+      });
+
+      // Update coords on drag
+      marker.on('dragend', (ev) => {
+        const { lat, lng } = ev.target.getLatLng();
+        const p = points.find(p => p.id === id);
+        if (p) {
+          p.lat = lat; p.lng = lng;
+          updateChips();
+          // Optionally trigger recalc automatically:
+          // recalc();
+        }
+      });
+
+      points.push({ id, lat: e.latlng.lat, lng: e.latlng.lng, marker });
+      updateChips();
+    });
+
+    // --- REMOVE POINT helper
+    function removePointById(id) {
+      const idx = points.findIndex(p => p.id === id);
+      if (idx >= 0) {
+        points[idx].marker.remove();
+        points.splice(idx,1);
+        updateChips();
       }
     }
 
-    // unions
-    const unions = {};
-    for (const m of bands) unions[m] = byBand[m].length ? byBand[m].reduce((a,b)=>turf.union(a,b)) : null;
-
-    // rings (avoid overlapping fill)
-    const rings = {};
-    const u30 = unions[30]||null, u45 = unions[45]||null, u60 = unions[60]||null;
-    rings[30] = u30 || null;
-    rings[45] = (u45 && u30) ? turf.difference(u45, u30) : (u45||null);
-    rings[60] = (u60 && u45) ? turf.difference(u60, u45) : (u60||null);
-
-    // clear prior layers
-    [30,45,60].forEach(m => { if (layersByBand[m]) { map.removeLayer(layersByBand[m]); layersByBand[m] = null; }});
-
-    // ensure panes + z-order
-    const ensurePane = (name, z) => { if (!map.getPane(name)) map.createPane(name); map.getPane(name).style.zIndex = z; };
-    ensurePane('pane60', 1001); ensurePane('pane45', 1002); ensurePane('pane30', 1003);
-
-    // draw bottom-up
-    for (const m of [60,45,30]) {
-      if (!bands.includes(m)) continue;
-      const g = rings[m];
-      if (!g) continue;
-      layersByBand[m] = L.geoJSON(g, { style: fillStyles[m], pane: `pane${m}` }).addTo(map);
+    // --- Chips UI (also removable)
+    function updateChips() {
+      document.getElementById('count').textContent = points.length;
+      const el = document.getElementById('pointChips'); el.innerHTML = '';
+      points.forEach((p) => {
+        const c = document.createElement('div'); c.className = 'chip';
+        c.textContent = `${p.lat.toFixed(4)}, ${p.lng.toFixed(4)} ✕`;
+        c.onclick = () => removePointById(p.id);
+        el.appendChild(c);
+      });
     }
 
-    // fit bounds
-    const visibles = [30,45,60].map(m => layersByBand[m]).filter(Boolean);
-    if (visibles.length) {
+    function minutesToHM(m) {
+      const hh = Math.floor(m/60).toString().padStart(2,'0');
+      const mm = (m%60).toString().padStart(2,'0');
+      return `${hh}:${mm}`;
+    }
+
+    const timeSlider = document.getElementById('timeSlider');
+    const timeLabel  = document.getElementById('timeLabel');
+    timeLabel.textContent = minutesToHM(+timeSlider.value);
+    timeSlider.oninput = () => timeLabel.textContent = minutesToHM(+timeSlider.value);
+
+    function selectedBands() {
+      return Array.from(document.querySelectorAll('.band:checked')).map(b => +b.value).sort((a,b)=>a-b);
+    }
+
+    function buildISOForToday(minutes) {
+      const now = new Date();
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(minutes/60), minutes%60, 0);
+      return d.toISOString(); // UTC (Z). TravelTime accepts ISO strings.
+    }
+
+    document.getElementById('recalcBtn').onclick = recalc;
+
+    // --- Recalculate bands
+    async function recalc() {
+      const status = document.getElementById('status');
+      if (points.length === 0) { status.textContent = 'Add points first.'; return; }
+      const bands = selectedBands();
+      status.textContent = 'Computing…';
+
       try {
-        let b = visibles[0].getBounds();
-        visibles.slice(1).forEach(Lyr => b.extend(Lyr.getBounds()));
-        map.fitBounds(b.pad(0.05));
-      } catch(e){}
-    }
+        const body = {
+          arrivals: points.map(p => ({lat:p.lat, lng:p.lng})),
+          minutes: bands,
+          iso: buildISOForToday(+timeSlider.value)
+        };
 
-    status.textContent = 'Done.';
-  } catch (e) {
-    console.error(e);
-    status.textContent = 'Error. See console.';
-  }
-}
-</script>
+        // IMPORTANT: POST to the absolute Worker URL
+        const r = await fetch(WORKER_URL, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify(body)
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+
+        // group polygons by band
+        const byBand = {}; bands.forEach(m => byBand[m] = []);
+        for (const res of (data.results||[])) {
+          const id = res.search_id;
+          const band = parseInt(id.split("_")[1]?.replace("min",""),10);
+          if (!bands.includes(band)) continue;
+          for (const s of res.shapes||[]) {
+            const shell = s.shell.map(p => [p.lng, p.lat]);
+            const holes = (s.holes||[]).map(h => h.map(p => [p.lng, p.lat]));
+            byBand[band].push(turf.polygon([shell, ...holes]));
+          }
+        }
+
+        // unions
+        const unions = {};
+        for (const m of bands) unions[m] = byBand[m].length ? byBand[m].reduce((a,b)=>turf.union(a,b)) : null;
+
+        // rings (avoid overlapping fill)
+        const rings = {};
+        const u30 = unions[30]||null, u45 = unions[45]||null, u60 = unions[60]||null;
+        rings[30] = u30 || null;
+        rings[45] = (u45 && u30) ? turf.difference(u45, u30) : (u45||null);
+        rings[60] = (u60 && u45) ? turf.difference(u60, u45) : (u60||null);
+
+        // clear prior layers
+        [30,45,60].forEach(m => { if (layersByBand[m]) { map.removeLayer(layersByBand[m]); layersByBand[m] = null; }});
+
+        // ensure panes + z-order
+        const ensurePane = (name, z) => { if (!map.getPane(name)) map.createPane(name); map.getPane(name).style.zIndex = z; };
+        ensurePane('pane60', 1001); ensurePane('pane45', 1002); ensurePane('pane30', 1003);
+
+        // draw bottom-up
+        for (const m of [60,45,30]) {
+          if (!bands.includes(m)) continue;
+          const g = rings[m];
+          if (!g) continue;
+          layersByBand[m] = L.geoJSON(g, { style: fillStyles[m], pane: `pane${m}` }).addTo(map);
+        }
+
+        // fit bounds
+        const visibles = [30,45,60].map(m => layersByBand[m]).filter(Boolean);
+        if (visibles.length) {
+          try {
+            let b = visibles[0].getBounds();
+            visibles.slice(1).forEach(Lyr => b.extend(Lyr.getBounds()));
+            map.fitBounds(b.pad(0.05));
+          } catch(e){}
+        }
+
+        status.textContent = 'Done.';
+      } catch (e) {
+        console.error(e);
+        status.textContent = 'Error. See console.';
+      }
+    }
+  });
+  </script>
+</body>
+</html>
+
