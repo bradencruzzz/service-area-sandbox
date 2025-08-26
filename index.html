@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Concrete Service Area Sandbox</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .panel {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: #fff; padding: 10px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15); width: 300px; font: 13px system-ui, sans-serif;
+    }
+    .panel h3 { margin: 0 0 8px; font-size: 14px; }
+    .row { margin: 6px 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { background: #eef; border: 1px solid #99c; border-radius: 999px; padding: 2px 8px; cursor: pointer; }
+    .muted { color:#666; font-size:12px; }
+    button { cursor:pointer; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel">
+  <h3>Service Area Sandbox</h3>
+  <div class="row">
+    <b>How to:</b> Click the map to add a plant (max 10). Click a marker to remove it.
+  </div>
+  <div class="row">
+    <label>Time of day: <span id="timeLabel">09:00</span></label><br/>
+    <input id="timeSlider" type="range" min="0" max="1439" value="540" step="1" style="width:100%">
+  </div>
+  <div class="row">
+    <label>Drive-time bands:</label><br/>
+    <label><input type="checkbox" class="band" value="30" checked> 30 min</label>
+    <label><input type="checkbox" class="band" value="45" checked> 45 min</label>
+    <label><input type="checkbox" class="band" value="60" checked> 60 min</label>
+  </div>
+  <div class="row">
+    <button id="recalcBtn">Recalculate</button>
+    <span id="status" class="muted"></span>
+  </div>
+  <div class="row">
+    <div>Points (<span id="count">0</span>/10):</div>
+    <div id="pointChips" class="chips"></div>
+  </div>
+</div>
+
+<!-- Leaflet + Turf -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+<script>
+// ====== CONFIG: set your deployed Cloudflare Worker URL ======
+const WORKER_URL = "billowing-block-3cb1.bzcruzzz05.workers.dev"; // e.g., https://your-worker.YOURACCOUNT.workers.dev
+// =============================================================
+
+const map = L.map('map').setView([37.95, -77.5], 8);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+
+const maxPoints = 10;
+let points = []; // {lat,lng, marker}
+const layersByBand = {30:null,45:null,60:null};
+const sameHue = '#2aaeea'; // one color to avoid muddy blends
+const fillStyles = {
+  30: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.35 },
+  45: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.25 },
+  60: { color: sameHue, weight: 1.2, fillColor: sameHue, fillOpacity: 0.18 }
+};
+const zOrder = {30: 1003, 45: 1002, 60: 1001};
+
+map.on('click', (e) => {
+  if (points.length >= maxPoints) { alert('Max 10 points'); return; }
+  const m = L.circleMarker(e.latlng, { radius: 6, color: '#111', weight: 1, fillOpacity: 1 }).addTo(map);
+  m.on('click', () => { // remove on click
+    const idx = points.findIndex(p => p.marker === m);
+    if (idx >= 0) {
+      points[idx].marker.remove();
+      points.splice(idx,1);
+      updateChips();
+    }
+  });
+  points.push({ lat: e.latlng.lat, lng: e.latlng.lng, marker: m });
+  updateChips();
+});
+
+function updateChips() {
+  document.getElementById('count').textContent = points.length;
+  const el = document.getElementById('pointChips'); el.innerHTML = '';
+  points.forEach((p,i) => {
+    const c = document.createElement('div'); c.className = 'chip';
+    c.textContent = `${p.lat.toFixed(4)}, ${p.lng.toFixed(4)} ✕`;
+    c.onclick = () => { p.marker.remove(); points.splice(i,1); updateChips(); };
+    el.appendChild(c);
+  });
+}
+
+function minutesToHM(m) {
+  const hh = Math.floor(m/60).toString().padStart(2,'0');
+  const mm = (m%60).toString().padStart(2,'0');
+  return `${hh}:${mm}`;
+}
+
+const timeSlider = document.getElementById('timeSlider');
+const timeLabel  = document.getElementById('timeLabel');
+timeLabel.textContent = minutesToHM(+timeSlider.value);
+timeSlider.oninput = () => timeLabel.textContent = minutesToHM(+timeSlider.value);
+
+function selectedBands() {
+  return Array.from(document.querySelectorAll('.band:checked')).map(b => +b.value).sort((a,b)=>a-b);
+}
+
+function buildISOForToday(minutes) {
+  // Use local time converted to ISO UTC Z
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(minutes/60), minutes%60, 0);
+  return d.toISOString();
+}
+
+document.getElementById('recalcBtn').onclick = recalc;
+
+async function recalc() {
+  const status = document.getElementById('status');
+  if (points.length === 0) { status.textContent = 'Add points first.'; return; }
+  const bands = selectedBands();
+  status.textContent = 'Computing…';
+
+  try {
+    const body = {
+      arrivals: points.map(p => ({lat:p.lat, lng:p.lng})),
+      minutes: bands,
+      iso: buildISOForToday(+timeSlider.value)
+    };
+    const r = await fetch(WORKER_URL, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+
+    const byBand = {}; bands.forEach(m => byBand[m] = []);
+    for (const res of (data.results||[])) {
+      const id = res.search_id;               // pt_30min_...
+      const band = parseInt(id.split("_")[1]?.replace("min",""),10);
+      if (!bands.includes(band)) continue;
+      for (const s of res.shapes||[]) {
+        const shell = s.shell.map(p => [p.lng, p.lat]);
+        const holes = (s.holes||[]).map(h => h.map(p => [p.lng, p.lat]));
+        const poly = turf.polygon([shell, ...holes]);
+        byBand[band].push(poly);
+      }
+    }
+    const unions = {};
+    for (const m of bands) {
+      unions[m] = byBand[m].length ? byBand[m].reduce((a,b) => turf.union(a,b)) : null;
+    }
+
+    // Rings to avoid overdraw/muddy colors
+    const rings = {};
+    const u30 = unions[30]||null;
+    const u45 = unions[45]||null;
+    const u60 = unions[60]||null;
+
+    rings[30] = u30 || null;
+    rings[45] = (u45 && u30) ? turf.difference(u45, u30) : (u45||null);
+    rings[60] = (u60 && u45) ? turf.difference(u60, u45) : (u60||null);
+
+    for (const m of [30,45,60]) {
+      if (layersByBand[m]) { map.removeLayer(layersByBand[m]); layersByBand[m] = null; }
+    }
+    for (const m of [60,45,30]) {
+      if (!bands.includes(m)) continue;
+      const g = rings[m];
+      if (!g) continue;
+      if (!map.getPane(`pane${m}`)) map.createPane(`pane${m}`);
+      map.getPane(`pane${m}`).style.zIndex = (m===60?1001:(m===45?1002:1003));
+      layersByBand[m] = L.geoJSON(g, { style: fillStyles[m], pane: `pane${m}` }).addTo(map);
+    }
+
+    const visibles = [30,45,60].map(m => layersByBand[m]).filter(Boolean);
+    if (visibles.length) {
+      try {
+        let b = visibles[0].getBounds();
+        visibles.slice(1).forEach(Lyr => b.extend(Lyr.getBounds()));
+        map.fitBounds(b.pad(0.05));
+      } catch(e){}
+    }
+    status.textContent = 'Done.';
+  } catch (e) {
+    console.error(e);
+    status.textContent = 'Error. See console.';
+  }
+}
+</script>
+</body>
+</html>
