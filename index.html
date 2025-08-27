@@ -29,7 +29,6 @@
     .results { max-height: 160px; overflow:auto; margin-top:6px; border:1px solid #ddd; border-radius:6px; display:none; }
     .result-item { padding:6px 8px; cursor:pointer; }
     .result-item:hover { background:#f3f6ff; }
-    label small { color:#666; }
   </style>
 </head>
 <body>
@@ -42,12 +41,6 @@
 
     <div class="row">
       <b>How to:</b> Click the map to add a plant (max 10). Click a marker to remove. Drag markers to move.
-    </div>
-
-    <!-- Label for next point -->
-    <div class="row">
-      <label>Label (optional) <small>applies to the next added point</small></label>
-      <input id="labelInput" placeholder="e.g. Springfield Ready-Mix Plant" />
     </div>
 
     <!-- Search -->
@@ -68,7 +61,7 @@
 
     <div class="row">
       <label>Drive-time bands:</label><br/>
-      <label><input type="checkbox" class="band" value="30" checked> 30 min <span style="color:#2ecc71">●</span></label><br/>
+      <label><input type="checkbox" class="band" value="30" checked> 30 min <span style="color:#3498db">●</span></label><br/>
       <label><input type="checkbox" class="band" value="45" checked> 45 min <span style="color:#f39c12">●</span></label><br/>
       <label><input type="checkbox" class="band" value="60" checked> 60 min <span style="color:#e74c3c">●</span></label>
     </div>
@@ -100,22 +93,22 @@
 
     // State
     const maxPoints = 10;
-    let points = []; // {id, lat, lng, marker, label?}
+    let points = []; // {id, lat, lng, marker, label}
+    let labelCounter = 1;
     const layersByBand = {30:null,45:null,60:null};
 
-    // Distinct colors per band
+    // Distinct colors per band (30=blue, 45=orange, 60=red)
     const fillStyles = {
-      30: { color: '#2ecc71', weight: 1.2, fillColor: '#2ecc71', fillOpacity: 0.35 }, // green
+      30: { color: '#3498db', weight: 1.2, fillColor: '#3498db', fillOpacity: 0.35 }, // blue
       45: { color: '#f39c12', weight: 1.2, fillColor: '#f39c12', fillOpacity: 0.25 }, // orange
       60: { color: '#e74c3c', weight: 1.2, fillColor: '#e74c3c', fillOpacity: 0.18 }  // red
     };
 
-    const labelInput = document.getElementById('labelInput');
-
     const makeId = () => Math.random().toString(36).slice(2,9);
 
-    function addPoint(lat, lng, label) {
+    function addPoint(lat, lng) {
       if (points.length >= maxPoints) { alert('Max 10 points'); return null; }
+      const label = `Point ${labelCounter++}`;
       const marker = L.marker([lat, lng], { draggable:true }).addTo(map);
       const id = makeId();
 
@@ -135,9 +128,9 @@
         updateChips();
       });
 
-      if (label) marker.bindTooltip(label, {permanent:false});
+      marker.bindTooltip(label, {permanent:false});
 
-      const pt = { id, lat, lng, marker, label: label || null };
+      const pt = { id, lat, lng, marker, label };
       points.push(pt);
       updateChips();
       return pt;
@@ -155,18 +148,15 @@
     function renamePoint(id, newLabel) {
       const p = points.find(p => p.id === id);
       if (!p) return;
-      p.label = newLabel || null;
+      p.label = newLabel || `Point ${p.id.slice(0,3)}`;
       if (p.marker.getTooltip()) p.marker.unbindTooltip();
       if (newLabel) p.marker.bindTooltip(newLabel, {permanent:false});
+      else p.marker.bindTooltip(p.label, {permanent:false});
       updateChips();
     }
 
-    // Click to add with current label input (then clear the label field)
-    map.on('click', (e) => {
-      const lbl = labelInput.value.trim() || null;
-      addPoint(e.latlng.lat, e.latlng.lng, lbl);
-      labelInput.value = '';
-    });
+    // Click to add
+    map.on('click', (e) => addPoint(e.latlng.lat, e.latlng.lng));
 
     // Chip list
     function updateChips() {
@@ -174,12 +164,12 @@
       const el = document.getElementById('pointChips'); el.innerHTML = '';
       points.forEach((p) => {
         const c = document.createElement('div'); c.className = 'chip';
-        const name = p.label ? p.label : `${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}`;
+        const name = p.label;
 
         const span = document.createElement('span'); span.className = 'name'; span.textContent = name;
         const edit = document.createElement('button'); edit.title = 'Rename'; edit.textContent = '✎';
         edit.onclick = () => {
-          const newLabel = prompt('Enter label (leave blank to clear):', p.label || '');
+          const newLabel = prompt('Enter label (leave blank to auto):', p.label || '');
           if (newLabel !== null) renamePoint(p.id, newLabel.trim());
         };
         const del = document.createElement('button'); del.title = 'Remove'; del.textContent = '✕';
@@ -302,19 +292,17 @@
       const q = searchInput.value.trim();
       if (!q) return;
 
-      // If it's lat,lon, add immediately with current label
+      // lat,lon → add immediately
       const parsed = parseLatLon(q);
       if (parsed) {
-        const lbl = labelInput.value.trim() || null;
-        addPoint(parsed.lat, parsed.lng, lbl);
-        labelInput.value = ''; // consume
+        addPoint(parsed.lat, parsed.lng);
         searchInput.value = '';
         resultsBox.style.display = 'none';
         resultsBox.innerHTML = '';
         return;
       }
 
-      // Else, use Nominatim
+      // Nominatim
       resultsBox.innerHTML = '<div class="result-item muted">Searching…</div>';
       resultsBox.style.display = 'block';
       try {
@@ -334,9 +322,7 @@
           div.textContent = r.display_name;
           div.onclick = () => {
             const lat = parseFloat(r.lat), lng = parseFloat(r.lon);
-            const lbl = (labelInput.value.trim() || r.display_name);
-            addPoint(lat, lng, lbl);
-            labelInput.value = ''; // consume label on add
+            addPoint(lat, lng);
             resultsBox.style.display = 'none';
             resultsBox.innerHTML = '';
             searchInput.value = '';
