@@ -4,14 +4,13 @@
   <meta charset="utf-8" />
   <title>Concrete Service Area Sandbox</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     html, body, #map { height: 100vh; margin: 0; }
     .panel {
       position: absolute; top: 10px; left: 10px; z-index: 1000;
       background: #fff; padding: 12px; border-radius: 10px;
-      box-shadow: 0 2px 8px rgba(0,0,0,.15); width: 340px; font: 13px system-ui, sans-serif;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15); width: 360px; font: 13px system-ui, sans-serif;
     }
     .panel h3 { margin: 0 0 8px; font-size: 14px; }
     .row { margin: 8px 0; }
@@ -20,27 +19,42 @@
       background: #f6f8ff; border: 1px solid #cfe0ff; border-radius: 999px;
       padding: 2px 8px; display:flex; align-items:center; gap:6px;
     }
-    .chip .name { max-width: 170px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .chip .name { max-width: 200px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
     .chip button { border:none; background:transparent; cursor:pointer; padding:0 4px; }
     .muted { color:#666; font-size:12px; }
     button { cursor:pointer; }
     .search-row { display:flex; gap:6px; }
     .search-row input { flex:1; padding:6px 8px; }
-    .results { max-height: 160px; overflow:auto; margin-top:6px; border:1px solid #ddd; border-radius:6px; display:none; }
+    .results { max-height: 180px; overflow:auto; margin-top:6px; border:1px solid #ddd; border-radius:6px; display:none; }
     .result-item { padding:6px 8px; cursor:pointer; }
     .result-item:hover { background:#f3f6ff; }
+
+    /* Editable label over markers */
+    .leaflet-tooltip.label-tip {
+      background: rgba(255,255,255,0.95);
+      border: 1px solid #cfd8dc;
+      color: #111;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    .label-edit {
+      min-width: 60px;
+      max-width: 220px;
+      display: inline-block;
+      outline: none;
+    }
   </style>
 </head>
 <body>
-  <!-- Map -->
   <div id="map"></div>
 
-  <!-- Control panel -->
   <div class="panel">
     <h3>Service Area Sandbox</h3>
 
     <div class="row">
-      <b>How to:</b> Click the map to add a plant (max 10). Click a marker to remove. Drag markers to move.
+      <b>How to:</b> Click the map to add a plant (max 10). Drag markers to move. Click the label above a marker to rename. Click a marker to remove.
     </div>
 
     <!-- Search -->
@@ -77,7 +91,6 @@
     </div>
   </div>
 
-  <!-- Leaflet + Turf -->
   <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script defer src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
@@ -106,34 +119,65 @@
 
     const makeId = () => Math.random().toString(36).slice(2,9);
 
-    function addPoint(lat, lng) {
-      if (points.length >= maxPoints) { alert('Max 10 points'); return null; }
-      const label = `Point ${labelCounter++}`;
-      const marker = L.marker([lat, lng], { draggable:true }).addTo(map);
-      const id = makeId();
+    // Build editable tooltip content and wire events
+    function applyEditableLabel(marker, point) {
+      const html = `<span class="label-edit" contenteditable="true" spellcheck="false">${point.label}</span>`;
+      marker.bindTooltip(html, {permanent:true, direction:'top', offset:[0,-10], className:'label-tip', interactive:true});
+      const tt = marker.getTooltip();
+      if (!tt) return;
 
-      // Remove on click
-      marker.on('click', (ev) => {
-        ev.originalEvent?.stopPropagation?.();
+      // Wait until the tooltip is added to the DOM
+      marker.on('tooltipopen', () => {
+        const el = tt.getElement().querySelector('.label-edit');
+        if (!el) return;
+
+        // Prevent clicks on the label from being treated as marker clicks (so we don't delete)
+        el.addEventListener('click', ev => ev.stopPropagation());
+
+        // Save on Enter or blur
+        const save = () => {
+          const newLabel = el.textContent.trim() || ('Point ' + point.id.slice(0,3));
+          point.label = newLabel;
+          updateChips();
+        };
+        el.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); }
+        });
+        el.addEventListener('blur', save);
+      });
+
+      // Open immediately so label is visible
+      marker.openTooltip();
+    }
+
+    function addPoint(lat, lng, label) {
+      if (points.length >= maxPoints) { alert('Max 10 points'); return null; }
+      const id = makeId();
+      const point = {
+        id, lat, lng,
+        label: label || `Point ${labelCounter++}`,
+        marker: L.marker([lat, lng], { draggable:true }).addTo(map)
+      };
+
+      // Remove on click (but tooltip clicks are suppressed)
+      point.marker.on('click', (ev) => {
+        // If click originated from tooltip content, ignore
+        const path = ev.originalEvent?.composedPath?.() || [];
+        if (path.some(n => n.classList && n.classList.contains('label-edit'))) return;
         removePointById(id);
       });
 
       // Update on drag
-      marker.on('dragend', (ev) => {
-        const p = points.find(p => p.id === id);
-        if (!p) return;
+      point.marker.on('dragend', (ev) => {
         const { lat, lng } = ev.target.getLatLng();
-        p.lat = lat;
-        p.lng = lng;
+        point.lat = lat; point.lng = lng;
         updateChips();
       });
 
-      marker.bindTooltip(label, {permanent:false});
-
-      const pt = { id, lat, lng, marker, label };
-      points.push(pt);
+      applyEditableLabel(point.marker, point);
+      points.push(point);
       updateChips();
-      return pt;
+      return point;
     }
 
     function removePointById(id) {
@@ -145,37 +189,19 @@
       }
     }
 
-    function renamePoint(id, newLabel) {
-      const p = points.find(p => p.id === id);
-      if (!p) return;
-      p.label = newLabel || `Point ${p.id.slice(0,3)}`;
-      if (p.marker.getTooltip()) p.marker.unbindTooltip();
-      if (newLabel) p.marker.bindTooltip(newLabel, {permanent:false});
-      else p.marker.bindTooltip(p.label, {permanent:false});
-      updateChips();
-    }
-
     // Click to add
     map.on('click', (e) => addPoint(e.latlng.lat, e.latlng.lng));
 
-    // Chip list
+    // Chips (show label + remove only)
     function updateChips() {
       document.getElementById('count').textContent = points.length;
       const el = document.getElementById('pointChips'); el.innerHTML = '';
       points.forEach((p) => {
         const c = document.createElement('div'); c.className = 'chip';
-        const name = p.label;
-
-        const span = document.createElement('span'); span.className = 'name'; span.textContent = name;
-        const edit = document.createElement('button'); edit.title = 'Rename'; edit.textContent = '✎';
-        edit.onclick = () => {
-          const newLabel = prompt('Enter label (leave blank to auto):', p.label || '');
-          if (newLabel !== null) renamePoint(p.id, newLabel.trim());
-        };
+        const span = document.createElement('span'); span.className = 'name'; span.textContent = p.label;
         const del = document.createElement('button'); del.title = 'Remove'; del.textContent = '✕';
         del.onclick = () => removePointById(p.id);
-
-        c.appendChild(span); c.appendChild(edit); c.appendChild(del);
+        c.appendChild(span); c.appendChild(del);
         el.appendChild(c);
       });
     }
@@ -220,7 +246,6 @@
         if (!r.ok) throw new Error(await r.text());
         const data = await r.json();
 
-        // group polygons by band
         const byBand = {}; bands.forEach(m => byBand[m] = []);
         for (const res of (data.results||[])) {
           const band = parseInt(res.search_id.split("_")[1]?.replace("min",""),10);
@@ -232,21 +257,17 @@
           }
         }
 
-        // unions
         const unions = {};
         for (const m of bands) unions[m] = byBand[m].length ? byBand[m].reduce((a,b)=>turf.union(a,b)) : null;
 
-        // rings (avoid overlapping fill)
         const rings = {};
         const u30 = unions[30]||null, u45 = unions[45]||null, u60 = unions[60]||null;
         rings[30] = u30 || null;
         rings[45] = (u45 && u30) ? turf.difference(u45, u30) : (u45||null);
         rings[60] = (u60 && u45) ? turf.difference(u60, u45) : (u60||null);
 
-        // clear prior layers
         [30,45,60].forEach(m => { if (layersByBand[m]) { map.removeLayer(layersByBand[m]); layersByBand[m] = null; }});
 
-        // ensure panes + z-order (60 bottom → 30 top)
         const ensurePane = (name, z) => { if (!map.getPane(name)) map.createPane(name); map.getPane(name).style.zIndex = z; };
         ensurePane('pane60', 1001); ensurePane('pane45', 1002); ensurePane('pane30', 1003);
 
@@ -273,13 +294,12 @@
       }
     }
 
-    // --- Search (OSM Nominatim + lat,lon parser) ---
+    // ====== Search with live suggestions ======
     const searchInput = document.getElementById('searchInput');
     const searchBtn   = document.getElementById('searchBtn');
     const resultsBox  = document.getElementById('searchResults');
 
     function parseLatLon(text) {
-      if (!text) return null;
       const m = text.trim().match(/^\s*(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)\s*$/);
       if (!m) return null;
       const lat = parseFloat(m[1]), lng = parseFloat(m[3]);
@@ -288,50 +308,101 @@
       return { lat, lng };
     }
 
+    // Debounce
+    let debounceTimer = null;
+    function debounce(fn, ms) {
+      return (...args) => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => fn(...args), ms);
+      };
+    }
+
+    async function fetchSuggestions(q) {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5&addressdetails=0`;
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      return await res.json();
+    }
+
+    function showResults(items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        resultsBox.innerHTML = '<div class="result-item muted">No results</div>';
+        resultsBox.style.display = 'block';
+        return;
+      }
+      resultsBox.innerHTML = '';
+      items.forEach(r => {
+        const div = document.createElement('div');
+        div.className = 'result-item';
+        div.textContent = r.display_name;
+        div.onclick = () => {
+          const lat = parseFloat(r.lat), lng = parseFloat(r.lon);
+          addPoint(lat, lng, r.display_name);
+          resultsBox.style.display = 'none';
+          resultsBox.innerHTML = '';
+          searchInput.value = '';
+        };
+        resultsBox.appendChild(div);
+      });
+      resultsBox.style.display = 'block';
+    }
+
+    const typeahead = debounce(async () => {
+      const q = searchInput.value.trim();
+      resultsBox.innerHTML = '';
+      if (q.length < 3) { resultsBox.style.display = 'none'; return; }
+
+      // if it's lat,lon, don't suggest—just wait for Add or Enter
+      if (parseLatLon(q)) { resultsBox.style.display = 'none'; return; }
+
+      resultsBox.innerHTML = '<div class="result-item muted">Searching…</div>';
+      resultsBox.style.display = 'block';
+      try {
+        const items = await fetchSuggestions(q);
+        showResults(items);
+      } catch (e) {
+        console.error(e);
+        resultsBox.innerHTML = '<div class="result-item muted">Error searching</div>';
+      }
+    }, 300);
+
+    searchInput.addEventListener('input', typeahead);
+    searchInput.addEventListener('focus', () => { if (resultsBox.innerHTML) resultsBox.style.display = 'block'; });
+    document.addEventListener('click', (e) => {
+      if (!resultsBox.contains(e.target) && e.target !== searchInput) {
+        resultsBox.style.display = 'none';
+      }
+    });
+
+    // Add button (address or coordinates)
     async function doSearch() {
       const q = searchInput.value.trim();
       if (!q) return;
 
-      // lat,lon → add immediately
       const parsed = parseLatLon(q);
       if (parsed) {
         addPoint(parsed.lat, parsed.lng);
         searchInput.value = '';
-        resultsBox.style.display = 'none';
-        resultsBox.innerHTML = '';
         return;
       }
 
-      // Nominatim
-      resultsBox.innerHTML = '<div class="result-item muted">Searching…</div>';
-      resultsBox.style.display = 'block';
+      // Fetch suggestions immediately and pick the first
       try {
-        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5&addressdetails=0`;
-        const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-        const items = await res.json();
-
-        if (!Array.isArray(items) || items.length === 0) {
+        const items = await fetchSuggestions(q);
+        if (Array.isArray(items) && items.length > 0) {
+          const r = items[0];
+          addPoint(parseFloat(r.lat), parseFloat(r.lon), r.display_name);
+        } else {
           resultsBox.innerHTML = '<div class="result-item muted">No results</div>';
+          resultsBox.style.display = 'block';
           return;
         }
-
+        resultsBox.style.display = 'none';
         resultsBox.innerHTML = '';
-        items.forEach(r => {
-          const div = document.createElement('div');
-          div.className = 'result-item';
-          div.textContent = r.display_name;
-          div.onclick = () => {
-            const lat = parseFloat(r.lat), lng = parseFloat(r.lon);
-            addPoint(lat, lng);
-            resultsBox.style.display = 'none';
-            resultsBox.innerHTML = '';
-            searchInput.value = '';
-          };
-          resultsBox.appendChild(div);
-        });
+        searchInput.value = '';
       } catch (e) {
         console.error(e);
         resultsBox.innerHTML = '<div class="result-item muted">Error searching</div>';
+        resultsBox.style.display = 'block';
       }
     }
 
