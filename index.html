@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <title>Concrete Service Area Sandbox</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     html, body, #map { height: 100vh; margin: 0; }
@@ -23,13 +24,15 @@
     .chip button { border:none; background:transparent; cursor:pointer; padding:0 4px; }
     .muted { color:#666; font-size:12px; }
     button { cursor:pointer; }
+
+    /* Search UI */
     .search-row { display:flex; gap:6px; }
     .search-row input { flex:1; padding:6px 8px; }
     .results { max-height: 180px; overflow:auto; margin-top:6px; border:1px solid #ddd; border-radius:6px; display:none; }
     .result-item { padding:6px 8px; cursor:pointer; }
     .result-item:hover { background:#f3f6ff; }
 
-    /* Editable label over markers */
+    /* Editable label tooltip */
     .leaflet-tooltip.label-tip {
       background: rgba(255,255,255,0.95);
       border: 1px solid #cfd8dc;
@@ -54,7 +57,8 @@
     <h3>Service Area Sandbox</h3>
 
     <div class="row">
-      <b>How to:</b> Click the map to add a plant (max 10). Drag markers to move. Click the label above a marker to rename. Click a marker to remove.
+      <b>How to:</b> Click the map to add a plant (max 10). Drag markers to move.
+      Click the label above a marker to rename. Click a marker to remove.
     </div>
 
     <!-- Search -->
@@ -64,7 +68,7 @@
         <button id="searchBtn">Add</button>
       </div>
       <div id="searchResults" class="results"></div>
-      <div class="muted">Geocoding by OpenStreetMap Nominatim</div>
+      <div class="muted">Geocoding by OpenStreetMap Nominatim (via your Worker)</div>
     </div>
 
     <!-- Time + bands -->
@@ -91,6 +95,7 @@
     </div>
   </div>
 
+  <!-- Leaflet + Turf -->
   <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script defer src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
@@ -119,19 +124,18 @@
 
     const makeId = () => Math.random().toString(36).slice(2,9);
 
-    // Build editable tooltip content and wire events
+    // ----- Label tooltip helpers -----
     function applyEditableLabel(marker, point) {
       const html = `<span class="label-edit" contenteditable="true" spellcheck="false">${point.label}</span>`;
       marker.bindTooltip(html, {permanent:true, direction:'top', offset:[0,-10], className:'label-tip', interactive:true});
       const tt = marker.getTooltip();
       if (!tt) return;
 
-      // Wait until the tooltip is added to the DOM
       marker.on('tooltipopen', () => {
         const el = tt.getElement().querySelector('.label-edit');
         if (!el) return;
 
-        // Prevent clicks on the label from being treated as marker clicks (so we don't delete)
+        // Avoid removing the point when clicking label
         el.addEventListener('click', ev => ev.stopPropagation());
 
         // Save on Enter or blur
@@ -146,28 +150,27 @@
         el.addEventListener('blur', save);
       });
 
-      // Open immediately so label is visible
       marker.openTooltip();
     }
 
-    function addPoint(lat, lng, label) {
+    // ----- Points -----
+    function addPoint(lat, lng, preferredLabel) {
       if (points.length >= maxPoints) { alert('Max 10 points'); return null; }
       const id = makeId();
       const point = {
         id, lat, lng,
-        label: label || `Point ${labelCounter++}`,
+        label: preferredLabel || `Point ${labelCounter++}`,
         marker: L.marker([lat, lng], { draggable:true }).addTo(map)
       };
 
-      // Remove on click (but tooltip clicks are suppressed)
+      // Remove on marker click (but not when clicking in the tooltip)
       point.marker.on('click', (ev) => {
-        // If click originated from tooltip content, ignore
         const path = ev.originalEvent?.composedPath?.() || [];
         if (path.some(n => n.classList && n.classList.contains('label-edit'))) return;
         removePointById(id);
       });
 
-      // Update on drag
+      // Update position on drag
       point.marker.on('dragend', (ev) => {
         const { lat, lng } = ev.target.getLatLng();
         point.lat = lat; point.lng = lng;
@@ -189,10 +192,9 @@
       }
     }
 
-    // Click to add
     map.on('click', (e) => addPoint(e.latlng.lat, e.latlng.lng));
 
-    // Chips (show label + remove only)
+    // Chips (label + remove)
     function updateChips() {
       document.getElementById('count').textContent = points.length;
       const el = document.getElementById('pointChips'); el.innerHTML = '';
@@ -206,7 +208,7 @@
       });
     }
 
-    // Time slider
+    // ----- Time + Bands -----
     const timeSlider = document.getElementById('timeSlider');
     const timeLabel  = document.getElementById('timeLabel');
     const minutesToHM = m => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
@@ -222,7 +224,6 @@
       return d.toISOString();
     };
 
-    // Recalculate
     document.getElementById('recalcBtn').onclick = recalc;
 
     async function recalc() {
@@ -246,6 +247,7 @@
         if (!r.ok) throw new Error(await r.text());
         const data = await r.json();
 
+        // group polygons by band
         const byBand = {}; bands.forEach(m => byBand[m] = []);
         for (const res of (data.results||[])) {
           const band = parseInt(res.search_id.split("_")[1]?.replace("min",""),10);
@@ -257,17 +259,21 @@
           }
         }
 
+        // unions
         const unions = {};
         for (const m of bands) unions[m] = byBand[m].length ? byBand[m].reduce((a,b)=>turf.union(a,b)) : null;
 
+        // rings (avoid overlapping fill)
         const rings = {};
         const u30 = unions[30]||null, u45 = unions[45]||null, u60 = unions[60]||null;
         rings[30] = u30 || null;
         rings[45] = (u45 && u30) ? turf.difference(u45, u30) : (u45||null);
         rings[60] = (u60 && u45) ? turf.difference(u60, u45) : (u60||null);
 
+        // clear prior layers
         [30,45,60].forEach(m => { if (layersByBand[m]) { map.removeLayer(layersByBand[m]); layersByBand[m] = null; }});
 
+        // ensure panes + z-order (60 bottom → 30 top)
         const ensurePane = (name, z) => { if (!map.getPane(name)) map.createPane(name); map.getPane(name).style.zIndex = z; };
         ensurePane('pane60', 1001); ensurePane('pane45', 1002); ensurePane('pane30', 1003);
 
@@ -278,6 +284,7 @@
           layersByBand[m] = L.geoJSON(g, { style: fillStyles[m], pane: `pane${m}` }).addTo(map);
         }
 
+        // Fit bounds to visible layers
         const visibles = [30,45,60].map(m => layersByBand[m]).filter(Boolean);
         if (visibles.length) {
           try {
@@ -294,123 +301,3 @@
       }
     }
 
-    // ====== Search with live suggestions ======
-    const searchInput = document.getElementById('searchInput');
-    const searchBtn   = document.getElementById('searchBtn');
-    const resultsBox  = document.getElementById('searchResults');
-
-    function parseLatLon(text) {
-      const m = text.trim().match(/^\s*(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)\s*$/);
-      if (!m) return null;
-      const lat = parseFloat(m[1]), lng = parseFloat(m[3]);
-      if (isNaN(lat) || isNaN(lng)) return null;
-      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
-      return { lat, lng };
-    }
-
-    // Debounce
-    let debounceTimer = null;
-    function debounce(fn, ms) {
-      return (...args) => {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => fn(...args), ms);
-      };
-    }
-
-    async function fetchSuggestions(q) {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5&addressdetails=0`;
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-      return await res.json();
-    }
-
-    function showResults(items) {
-      if (!Array.isArray(items) || items.length === 0) {
-        resultsBox.innerHTML = '<div class="result-item muted">No results</div>';
-        resultsBox.style.display = 'block';
-        return;
-      }
-      resultsBox.innerHTML = '';
-      items.forEach(r => {
-        const div = document.createElement('div');
-        div.className = 'result-item';
-        div.textContent = r.display_name;
-        div.onclick = () => {
-          const lat = parseFloat(r.lat), lng = parseFloat(r.lon);
-          addPoint(lat, lng, r.display_name);
-          resultsBox.style.display = 'none';
-          resultsBox.innerHTML = '';
-          searchInput.value = '';
-        };
-        resultsBox.appendChild(div);
-      });
-      resultsBox.style.display = 'block';
-    }
-
-    const typeahead = debounce(async () => {
-      const q = searchInput.value.trim();
-      resultsBox.innerHTML = '';
-      if (q.length < 3) { resultsBox.style.display = 'none'; return; }
-
-      // if it's lat,lon, don't suggest—just wait for Add or Enter
-      if (parseLatLon(q)) { resultsBox.style.display = 'none'; return; }
-
-      resultsBox.innerHTML = '<div class="result-item muted">Searching…</div>';
-      resultsBox.style.display = 'block';
-      try {
-        const items = await fetchSuggestions(q);
-        showResults(items);
-      } catch (e) {
-        console.error(e);
-        resultsBox.innerHTML = '<div class="result-item muted">Error searching</div>';
-      }
-    }, 300);
-
-    searchInput.addEventListener('input', typeahead);
-    searchInput.addEventListener('focus', () => { if (resultsBox.innerHTML) resultsBox.style.display = 'block'; });
-    document.addEventListener('click', (e) => {
-      if (!resultsBox.contains(e.target) && e.target !== searchInput) {
-        resultsBox.style.display = 'none';
-      }
-    });
-
-    // Add button (address or coordinates)
-    async function doSearch() {
-      const q = searchInput.value.trim();
-      if (!q) return;
-
-      const parsed = parseLatLon(q);
-      if (parsed) {
-        addPoint(parsed.lat, parsed.lng);
-        searchInput.value = '';
-        return;
-      }
-
-      // Fetch suggestions immediately and pick the first
-      try {
-        const items = await fetchSuggestions(q);
-        if (Array.isArray(items) && items.length > 0) {
-          const r = items[0];
-          addPoint(parseFloat(r.lat), parseFloat(r.lon), r.display_name);
-        } else {
-          resultsBox.innerHTML = '<div class="result-item muted">No results</div>';
-          resultsBox.style.display = 'block';
-          return;
-        }
-        resultsBox.style.display = 'none';
-        resultsBox.innerHTML = '';
-        searchInput.value = '';
-      } catch (e) {
-        console.error(e);
-        resultsBox.innerHTML = '<div class="result-item muted">Error searching</div>';
-        resultsBox.style.display = 'block';
-      }
-    }
-
-    searchBtn.onclick = doSearch;
-    searchInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') doSearch();
-    });
-  });
-  </script>
-</body>
-</html>
