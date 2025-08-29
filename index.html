@@ -105,26 +105,31 @@
     const WORKER_URL = "https://billowing-block-3cb1.bzcruzzz05.workers.dev";
     // ====================================================
 
-    // Map
+    // ---- Map init ----
+    const container = document.getElementById('map');
+    if (!container) {
+      console.error('Map container #map not found');
+      return;
+    }
     const map = L.map('map').setView([37.95, -77.5], 8);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
 
-    // State
+    // ---- State ----
     const maxPoints = 10;
     let points = []; // {id, lat, lng, marker, label}
     let labelCounter = 1;
     const layersByBand = {30:null,45:null,60:null};
 
-    // Distinct colors per band (30=blue, 45=orange, 60=red)
+    // Band styles (30=blue, 45=orange, 60=red)
     const fillStyles = {
-      30: { color: '#3498db', weight: 1.2, fillColor: '#3498db', fillOpacity: 0.35 }, // blue
-      45: { color: '#f39c12', weight: 1.2, fillColor: '#f39c12', fillOpacity: 0.25 }, // orange
-      60: { color: '#e74c3c', weight: 1.2, fillColor: '#e74c3c', fillOpacity: 0.18 }  // red
+      30: { color: '#3498db', weight: 1.2, fillColor: '#3498db', fillOpacity: 0.35 },
+      45: { color: '#f39c12', weight: 1.2, fillColor: '#f39c12', fillOpacity: 0.25 },
+      60: { color: '#e74c3c', weight: 1.2, fillColor: '#e74c3c', fillOpacity: 0.18 }
     };
 
     const makeId = () => Math.random().toString(36).slice(2,9);
 
-    // ----- Label tooltip helpers -----
+    // -- Label tooltip helpers --
     function applyEditableLabel(marker, point) {
       const html = `<span class="label-edit" contenteditable="true" spellcheck="false">${point.label}</span>`;
       marker.bindTooltip(html, {permanent:true, direction:'top', offset:[0,-10], className:'label-tip', interactive:true});
@@ -134,11 +139,7 @@
       marker.on('tooltipopen', () => {
         const el = tt.getElement().querySelector('.label-edit');
         if (!el) return;
-
-        // Avoid removing the point when clicking label
         el.addEventListener('click', ev => ev.stopPropagation());
-
-        // Save on Enter or blur
         const save = () => {
           const newLabel = el.textContent.trim() || ('Point ' + point.id.slice(0,3));
           point.label = newLabel;
@@ -153,7 +154,7 @@
       marker.openTooltip();
     }
 
-    // ----- Points -----
+    // -- Points --
     function addPoint(lat, lng, preferredLabel) {
       if (points.length >= maxPoints) { alert('Max 10 points'); return null; }
       const id = makeId();
@@ -162,21 +163,16 @@
         label: preferredLabel || `Point ${labelCounter++}`,
         marker: L.marker([lat, lng], { draggable:true }).addTo(map)
       };
-
-      // Remove on marker click (but not when clicking in the tooltip)
       point.marker.on('click', (ev) => {
         const path = ev.originalEvent?.composedPath?.() || [];
         if (path.some(n => n.classList && n.classList.contains('label-edit'))) return;
         removePointById(id);
       });
-
-      // Update position on drag
       point.marker.on('dragend', (ev) => {
         const { lat, lng } = ev.target.getLatLng();
         point.lat = lat; point.lng = lng;
         updateChips();
       });
-
       applyEditableLabel(point.marker, point);
       points.push(point);
       updateChips();
@@ -194,7 +190,6 @@
 
     map.on('click', (e) => addPoint(e.latlng.lat, e.latlng.lng));
 
-    // Chips (label + remove)
     function updateChips() {
       document.getElementById('count').textContent = points.length;
       const el = document.getElementById('pointChips'); el.innerHTML = '';
@@ -208,7 +203,7 @@
       });
     }
 
-    // ----- Time + Bands -----
+    // ---- Time + bands ----
     const timeSlider = document.getElementById('timeSlider');
     const timeLabel  = document.getElementById('timeLabel');
     const minutesToHM = m => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
@@ -247,7 +242,6 @@
         if (!r.ok) throw new Error(await r.text());
         const data = await r.json();
 
-        // group polygons by band
         const byBand = {}; bands.forEach(m => byBand[m] = []);
         for (const res of (data.results||[])) {
           const band = parseInt(res.search_id.split("_")[1]?.replace("min",""),10);
@@ -259,21 +253,17 @@
           }
         }
 
-        // unions
         const unions = {};
         for (const m of bands) unions[m] = byBand[m].length ? byBand[m].reduce((a,b)=>turf.union(a,b)) : null;
 
-        // rings (avoid overlapping fill)
         const rings = {};
         const u30 = unions[30]||null, u45 = unions[45]||null, u60 = unions[60]||null;
         rings[30] = u30 || null;
         rings[45] = (u45 && u30) ? turf.difference(u45, u30) : (u45||null);
         rings[60] = (u60 && u45) ? turf.difference(u60, u45) : (u60||null);
 
-        // clear prior layers
         [30,45,60].forEach(m => { if (layersByBand[m]) { map.removeLayer(layersByBand[m]); layersByBand[m] = null; }});
 
-        // ensure panes + z-order (60 bottom → 30 top)
         const ensurePane = (name, z) => { if (!map.getPane(name)) map.createPane(name); map.getPane(name).style.zIndex = z; };
         ensurePane('pane60', 1001); ensurePane('pane45', 1002); ensurePane('pane30', 1003);
 
@@ -284,7 +274,6 @@
           layersByBand[m] = L.geoJSON(g, { style: fillStyles[m], pane: `pane${m}` }).addTo(map);
         }
 
-        // Fit bounds to visible layers
         const visibles = [30,45,60].map(m => layersByBand[m]).filter(Boolean);
         if (visibles.length) {
           try {
@@ -300,4 +289,119 @@
         status.textContent = 'Error. See console.';
       }
     }
+
+    // ---- Search via Worker (/geocode) ----
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn   = document.getElementById('searchBtn');
+    const resultsBox  = document.getElementById('searchResults');
+
+    function parseLatLon(text) {
+      const m = text.trim().match(/^\s*(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)\s*$/);
+      if (!m) return null;
+      const lat = parseFloat(m[1]), lng = parseFloat(m[3]);
+      if (isNaN(lat) || isNaN(lng)) return null;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+      return { lat, lng };
+    }
+
+    let debounceTimer = null;
+    function debounce(fn, ms) {
+      return (...args) => { clearTimeout(debounceTimer); debounceTimer = setTimeout(() => fn(...args), ms); };
+    }
+
+    function mapBBox() {
+      const b = map.getBounds();
+      return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(",");
+    }
+
+    async function fetchSuggestions(q) {
+      const params = new URLSearchParams({ q, limit: "5", bbox: mapBBox() });
+      const url = `${WORKER_URL.replace(/\/$/,'')}/geocode?${params.toString()}`;
+      const res = await fetch(url, { method: "GET" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      return data.results || [];
+    }
+
+    function showResults(items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        resultsBox.innerHTML = '<div class="result-item muted">No results</div>';
+        resultsBox.style.display = 'block';
+        return;
+      }
+      resultsBox.innerHTML = '';
+      items.forEach(r => {
+        const div = document.createElement('div');
+        div.className = 'result-item';
+        div.textContent = r.display_name;
+        div.onclick = () => {
+          addPoint(parseFloat(r.lat), parseFloat(r.lon), r.display_name);
+          resultsBox.style.display = 'none';
+          resultsBox.innerHTML = '';
+          searchInput.value = '';
+        };
+        resultsBox.appendChild(div);
+      });
+      resultsBox.style.display = 'block';
+    }
+
+    const typeahead = debounce(async () => {
+      const q = searchInput.value.trim();
+      resultsBox.innerHTML = '';
+      if (q.length < 3) { resultsBox.style.display = 'none'; return; }
+      if (parseLatLon(q)) { resultsBox.style.display = 'none'; return; }
+      resultsBox.innerHTML = '<div class="result-item muted">Searching…</div>';
+      resultsBox.style.display = 'block';
+      try {
+        const items = await fetchSuggestions(q);
+        showResults(items);
+      } catch (e) {
+        console.error(e);
+        resultsBox.innerHTML = '<div class="result-item muted">Error searching</div>';
+        resultsBox.style.display = 'block';
+      }
+    }, 300);
+
+    searchInput.addEventListener('input', typeahead);
+    searchInput.addEventListener('focus', () => { if (resultsBox.innerHTML) resultsBox.style.display = 'block'; });
+    document.addEventListener('click', (e) => {
+      if (!resultsBox.contains(e.target) && e.target !== searchInput) {
+        resultsBox.style.display = 'none';
+      }
+    });
+
+    async function doSearch() {
+      const q = searchInput.value.trim();
+      if (!q) return;
+      const parsed = parseLatLon(q);
+      if (parsed) {
+        addPoint(parsed.lat, parsed.lng);
+        searchInput.value = '';
+        return;
+      }
+      try {
+        const items = await fetchSuggestions(q);
+        if (Array.isArray(items) && items.length > 0) {
+          const r = items[0];
+          addPoint(parseFloat(r.lat), parseFloat(r.lon), r.display_name);
+          resultsBox.style.display = 'none';
+          resultsBox.innerHTML = '';
+          searchInput.value = '';
+        } else {
+          resultsBox.innerHTML = '<div class="result-item muted">No results</div>';
+          resultsBox.style.display = 'block';
+        }
+      } catch (e) {
+        console.error(e);
+        resultsBox.innerHTML = '<div class="result-item muted">Error searching</div>';
+        resultsBox.style.display = 'block';
+      }
+    }
+
+    searchBtn.onclick = doSearch;
+    searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+  });
+  </script>
+</body>
+</html>
 
