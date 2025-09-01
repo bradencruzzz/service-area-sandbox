@@ -24,14 +24,13 @@
     .muted { color:#666; font-size:12px; }
     button { cursor:pointer; }
 
-    /* Search UI */
     .search-row { display:flex; gap:6px; }
     .search-row input { flex:1; padding:6px 8px; }
     .results { max-height: 180px; overflow:auto; margin-top:6px; border:1px solid #ddd; border-radius:6px; display:none; }
     .result-item { padding:6px 8px; cursor:pointer; }
     .result-item:hover { background:#f3f6ff; }
 
-    /* Tooltip + label controls */
+    /* Marker label tooltip */
     .leaflet-tooltip.label-tip {
       background: rgba(255,255,255,0.98);
       border: 1px solid #cfd8dc;
@@ -43,9 +42,7 @@
       text-align: center;
       user-select: none;
     }
-    .label-row {
-      display:flex; align-items:center; gap:6px; justify-content:center; max-width:260px;
-    }
+    .label-row { display:flex; align-items:center; gap:6px; justify-content:center; max-width:260px; }
     .label-text { max-width: 180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .label-btn {
       outline: none; border: 1px solid #cfd8dc; background:#f8f9fb; padding:0 4px; height:18px;
@@ -108,7 +105,9 @@
 
   <script>
   document.addEventListener('DOMContentLoaded', () => {
-    const WORKER_URL = "https://billowing-block-3cb1.bzcruzzz05.workers.dev"; // EDIT
+    // ------- EDIT THIS -------
+    const WORKER_URL = "https://billowing-block-3cb1.bzcruzzz05.workers.dev";
+    // -------------------------
 
     // Map
     const map = L.map('map').setView([37.95, -77.5], 8);
@@ -120,28 +119,6 @@
     let labelCounter = 1;
     const layersByBand = {30:null,45:null,60:null};
 
-    // Safety: ignore any map click that originated from UI (tooltip, chips, panel)
-    function isUIEvent(e) {
-      const evt = e.originalEvent || e; // Leaflet wraps DOM event
-      const path = evt.composedPath ? evt.composedPath() : [];
-      return path.some(n => {
-        if (!n || !n.classList) return false;
-        return n.classList.contains('label-row') ||
-               n.classList.contains('label-btn') ||
-               n.classList.contains('label-input') ||
-               n.classList.contains('leaflet-tooltip') ||
-               n.classList.contains('panel') ||
-               n.id === 'pointChips' ||
-               n.id === 'searchResults';
-      });
-    }
-
-    // Map click adds point unless UI-originated
-    map.on('click', (e) => {
-      if (isUIEvent(e)) return;
-      addPoint(e.latlng.lat, e.latlng.lng);
-    });
-
     // Band styles
     const fillStyles = {
       30: { color: '#3498db', weight: 1.2, fillColor: '#3498db', fillOpacity: 0.35 },
@@ -151,7 +128,31 @@
 
     const makeId = () => Math.random().toString(36).slice(2,9);
 
-    // Label UI HTML
+    // Prevent UI clicks from adding points
+    function isUIEvent(e) {
+      const evt = e.originalEvent || e;
+      let n = evt.target;
+      while (n) {
+        if (n.classList) {
+          if (n.classList.contains('label-row') ||
+              n.classList.contains('label-btn') ||
+              n.classList.contains('label-input') ||
+              n.classList.contains('leaflet-tooltip') ||
+              n.classList.contains('panel') ||
+              n.id === 'pointChips' ||
+              n.id === 'searchResults') return true;
+        }
+        n = n.parentNode;
+      }
+      return false;
+    }
+
+    map.on('click', (e) => {
+      if (isUIEvent(e)) return;
+      addPoint(e.latlng.lat, e.latlng.lng);
+    });
+
+    // Tooltip HTML
     function labelHtml(text, id) {
       return `
         <div class="label-row" data-id="${id}">
@@ -169,92 +170,88 @@
         </div>`;
     }
 
-    // Protect tooltip from bubbling into the map
+    // Leaflet helpers to stop propagation
     function protectTooltip(el) {
       if (!el) return;
       L.DomEvent.disableClickPropagation(el);
       L.DomEvent.disableScrollPropagation(el);
-      ['click','dblclick','mousedown','mouseup','pointerdown','pointerup','touchstart','touchend','contextmenu'].forEach(evt =>
-        L.DomEvent.on(el, evt, (ev) => { L.DomEvent.stop(ev); })
-      );
+      ['click','dblclick','mousedown','mouseup','pointerdown','pointerup','touchstart','touchend','contextmenu']
+        .forEach(evt => L.DomEvent.on(el, evt, (ev) => L.DomEvent.stop(ev)));
     }
 
-    function wireLabelEvents(marker, point) {
-      const tt = marker.getTooltip();
-      if (!tt) return;
+    // (Re)bind handlers to the current tooltip DOM
+    function bindTooltipHandlers(marker, point) {
+      const tt = marker.getTooltip(); if (!tt) return;
+      const el = tt.getElement(); if (!el) return;
 
-      marker.off('tooltipopen'); // prevent duplicate wiring
-      marker.on('tooltipopen', () => {
-        const el = tt.getElement();
-        protectTooltip(el);
+      protectTooltip(el);
 
-        const renameBtn = el.querySelector('.label-btn.rename');
-        const delBtn    = el.querySelector('.label-btn.del');
+      const renameBtn = el.querySelector('.label-btn.rename');
+      const delBtn    = el.querySelector('.label-btn.del');
 
-        // --- DELETE ---
-        if (delBtn) {
-          const onDelete = (ev) => {
-            L.DomEvent.stop(ev);
-            removePointById(point.id);
-          };
-          ['click','pointerdown','mousedown','touchstart','contextmenu']
-            .forEach(evt => L.DomEvent.on(delBtn, evt, onDelete));
-        }
+      // DELETE
+      if (delBtn) {
+        const onDelete = (ev) => { L.DomEvent.stop(ev); removePointById(point.id); };
+        ['click','pointerdown','mousedown','touchstart','contextmenu']
+          .forEach(evt => L.DomEvent.on(delBtn, evt, onDelete));
+      }
 
-        // --- RENAME ---
-        if (renameBtn) {
-          const onRename = (ev) => {
-            L.DomEvent.stop(ev);
-            marker.setTooltipContent(labelEditorHtml(point.label, point.id));
-            marker.dragging.disable();
+      // RENAME
+      if (renameBtn) {
+        const onRename = (ev) => {
+          L.DomEvent.stop(ev);
+          marker.setTooltipContent(labelEditorHtml(point.label, point.id));
+          marker.dragging.disable();
+          marker.openTooltip();
+
+          const editor = marker.getTooltip().getElement();
+          protectTooltip(editor);
+
+          const input     = editor.querySelector('.label-input');
+          const saveBtn   = editor.querySelector('.label-btn.save');
+          const cancelBtn = editor.querySelector('.label-btn.cancel');
+
+          const commit = () => {
+            const newLabel = (input.value || '').trim() || ('Point ' + point.id.slice(0,3));
+            point.label = newLabel;
+            marker.setTooltipContent(labelHtml(point.label, point.id));
+            marker.dragging.enable();
             marker.openTooltip();
-
-            const editor = marker.getTooltip().getElement();
-            protectTooltip(editor);
-
-            const input    = editor.querySelector('.label-input');
-            const saveBtn  = editor.querySelector('.label-btn.save');
-            const cancelBtn= editor.querySelector('.label-btn.cancel');
-
-            const commit = () => {
-              const newLabel = (input.value || '').trim() || ('Point ' + point.id.slice(0,3));
-              point.label = newLabel;
-              marker.setTooltipContent(labelHtml(point.label, point.id));
-              marker.dragging.enable();
-              marker.openTooltip();
-              updateChips();
-              wireLabelEvents(marker, point); // rebind for new DOM
-            };
-            const cancel = () => {
-              marker.setTooltipContent(labelHtml(point.label, point.id));
-              marker.dragging.enable();
-              marker.openTooltip();
-              wireLabelEvents(marker, point);
-            };
-
-            L.DomEvent.on(input, 'keydown', (e) => {
-              if (e.key === 'Enter') { L.DomEvent.stop(e); commit(); }
-              else if (e.key === 'Escape') { L.DomEvent.stop(e); cancel(); }
-            });
-            L.DomEvent.on(input, 'blur', () => commit());
-            L.DomEvent.on(saveBtn, 'click', (e) => { L.DomEvent.stop(e); commit(); });
-            L.DomEvent.on(cancelBtn, 'click', (e) => { L.DomEvent.stop(e); cancel(); });
-
-            input.focus(); input.select();
+            updateChips();
+            bindTooltipHandlers(marker, point);
           };
-          ['click','pointerdown','mousedown','touchstart','contextmenu']
-            .forEach(evt => L.DomEvent.on(renameBtn, evt, onRename));
-        }
-      });
+          const cancel = () => {
+            marker.setTooltipContent(labelHtml(point.label, point.id));
+            marker.dragging.enable();
+            marker.openTooltip();
+            bindTooltipHandlers(marker, point);
+          };
+
+          L.DomEvent.on(input, 'keydown', (e) => {
+            if (e.key === 'Enter') { L.DomEvent.stop(e); commit(); }
+            else if (e.key === 'Escape') { L.DomEvent.stop(e); cancel(); }
+          });
+          L.DomEvent.on(input, 'blur', () => commit());
+          L.DomEvent.on(saveBtn, 'click',   (e) => { L.DomEvent.stop(e); commit(); });
+          L.DomEvent.on(cancelBtn, 'click', (e) => { L.DomEvent.stop(e); cancel(); });
+
+          input.focus(); input.select();
+        };
+        ['click','pointerdown','mousedown','touchstart','contextmenu']
+          .forEach(evt => L.DomEvent.on(renameBtn, evt, onRename));
+      }
     }
 
+    // Attach tooltip + initial binding
     function attachLabel(marker, point) {
       marker.bindTooltip(
         labelHtml(point.label, point.id),
         { permanent: true, direction: 'top', offset: [0, -10], className: 'label-tip', interactive: true }
       );
       marker.openTooltip();
-      wireLabelEvents(marker, point);
+      bindTooltipHandlers(marker, point);
+      marker.off('tooltipopen');
+      marker.on('tooltipopen', () => bindTooltipHandlers(marker, point));
     }
 
     // Points
@@ -267,11 +264,7 @@
         marker: L.marker([lat, lng], { draggable:true }).addTo(map)
       };
 
-      // Marker click only opens tooltip (never delete)
-      point.marker.on('click', (e) => {
-        point.marker.openTooltip();
-      });
-
+      point.marker.on('click', () => point.marker.openTooltip());
       point.marker.on('dragend', (ev) => {
         const { lat, lng } = ev.target.getLatLng();
         point.lat = lat; point.lng = lng;
@@ -496,6 +489,7 @@
   </script>
 </body>
 </html>
+
 
 
 
