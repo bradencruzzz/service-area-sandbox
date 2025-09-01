@@ -24,6 +24,7 @@
     .muted { color:#666; font-size:12px; }
     button { cursor:pointer; }
 
+    /* Search UI */
     .search-row { display:flex; gap:6px; }
     .search-row input { flex:1; padding:6px 8px; }
     .results { max-height: 180px; overflow:auto; margin-top:6px; border:1px solid #ddd; border-radius:6px; display:none; }
@@ -39,17 +40,13 @@
       border-radius: 6px;
       padding: 2px 6px;
       font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      text-align: center;              /* keep centered */
-      user-select: none;               /* avoid accidental selection */
+      text-align: center;
+      user-select: none;
     }
     .label-row {
-      display:flex; align-items:center; gap:6px;
-      justify-content:center;          /* keep centered */
-      max-width:240px;
+      display:flex; align-items:center; gap:6px; justify-content:center; max-width:260px;
     }
-    .label-text {
-      max-width: 180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-    }
+    .label-text { max-width: 180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .label-btn {
       outline: none; border: 1px solid #cfd8dc; background:#f8f9fb; padding:0 4px; height:18px;
       border-radius: 3px; line-height:16px; font-size:11px;
@@ -122,7 +119,28 @@
     let points = []; // {id, lat, lng, marker, label}
     let labelCounter = 1;
     const layersByBand = {30:null,45:null,60:null};
-    let ignoreNextMapClick = false;  // <--- guard against bubbling
+
+    // Safety: ignore any map click that originated from UI (tooltip, chips, panel)
+    function isUIEvent(e) {
+      const evt = e.originalEvent || e; // Leaflet wraps DOM event
+      const path = evt.composedPath ? evt.composedPath() : [];
+      return path.some(n => {
+        if (!n || !n.classList) return false;
+        return n.classList.contains('label-row') ||
+               n.classList.contains('label-btn') ||
+               n.classList.contains('label-input') ||
+               n.classList.contains('leaflet-tooltip') ||
+               n.classList.contains('panel') ||
+               n.id === 'pointChips' ||
+               n.id === 'searchResults';
+      });
+    }
+
+    // Map click adds point unless UI-originated
+    map.on('click', (e) => {
+      if (isUIEvent(e)) return;
+      addPoint(e.latlng.lat, e.latlng.lng);
+    });
 
     // Band styles
     const fillStyles = {
@@ -151,33 +169,42 @@
         </div>`;
     }
 
-    // Wire events to a tooltip DOM element using Leaflet's own helpers
+    // Protect tooltip from bubbling into the map
     function protectTooltip(el) {
-      // Stop click/scroll propagation into Leaflet map & markers
+      if (!el) return;
       L.DomEvent.disableClickPropagation(el);
       L.DomEvent.disableScrollPropagation(el);
-      // Also stop default on key events inside tooltip
-      ['click','dblclick','mousedown','mouseup','pointerdown','pointerup','touchstart','touchend','contextmenu']
-        .forEach(evt => L.DomEvent.on(el, evt, L.DomEvent.stop));
+      ['click','dblclick','mousedown','mouseup','pointerdown','pointerup','touchstart','touchend','contextmenu'].forEach(evt =>
+        L.DomEvent.on(el, evt, (ev) => { L.DomEvent.stop(ev); })
+      );
     }
 
     function wireLabelEvents(marker, point) {
       const tt = marker.getTooltip();
       if (!tt) return;
 
+      marker.off('tooltipopen'); // prevent duplicate wiring
       marker.on('tooltipopen', () => {
         const el = tt.getElement();
-        if (!el) return;
-
         protectTooltip(el);
 
         const renameBtn = el.querySelector('.label-btn.rename');
         const delBtn    = el.querySelector('.label-btn.del');
 
+        // --- DELETE ---
+        if (delBtn) {
+          const onDelete = (ev) => {
+            L.DomEvent.stop(ev);
+            removePointById(point.id);
+          };
+          ['click','pointerdown','mousedown','touchstart','contextmenu']
+            .forEach(evt => L.DomEvent.on(delBtn, evt, onDelete));
+        }
+
+        // --- RENAME ---
         if (renameBtn) {
           const onRename = (ev) => {
-            ignoreNextMapClick = true;      // guard any stray click
-            L.DomEvent.stop(ev);            // stop + preventDefault
+            L.DomEvent.stop(ev);
             marker.setTooltipContent(labelEditorHtml(point.label, point.id));
             marker.dragging.disable();
             marker.openTooltip();
@@ -196,7 +223,7 @@
               marker.dragging.enable();
               marker.openTooltip();
               updateChips();
-              wireLabelEvents(marker, point); // re-wire events on new HTML
+              wireLabelEvents(marker, point); // rebind for new DOM
             };
             const cancel = () => {
               marker.setTooltipContent(labelHtml(point.label, point.id));
@@ -215,22 +242,8 @@
 
             input.focus(); input.select();
           };
-
-          // stop at all stages to avoid bubbling to map
-          ['click','pointerdown','mousedown','contextmenu','touchstart'].forEach(evt =>
-            L.DomEvent.on(renameBtn, evt, onRename)
-          );
-        }
-
-        if (delBtn) {
-          const onDelete = (ev) => {
-            ignoreNextMapClick = true;
-            L.DomEvent.stop(ev);
-            removePointById(point.id);
-          };
-          ['click','pointerdown','mousedown','contextmenu','touchstart'].forEach(evt =>
-            L.DomEvent.on(delBtn, evt, onDelete)
-          );
+          ['click','pointerdown','mousedown','touchstart','contextmenu']
+            .forEach(evt => L.DomEvent.on(renameBtn, evt, onRename));
         }
       });
     }
@@ -254,10 +267,8 @@
         marker: L.marker([lat, lng], { draggable:true }).addTo(map)
       };
 
-      // Marker click just opens tooltip (no delete on click)
+      // Marker click only opens tooltip (never delete)
       point.marker.on('click', (e) => {
-        // do not let this click add a point on the map
-        ignoreNextMapClick = true;
         point.marker.openTooltip();
       });
 
@@ -277,12 +288,6 @@
       const idx = points.findIndex(p => p.id === id);
       if (idx >= 0) { points[idx].marker.remove(); points.splice(idx, 1); updateChips(); }
     }
-
-    // Map click adds a point — unless a UI control just handled the click
-    map.on('click', (e) => {
-      if (ignoreNextMapClick) { ignoreNextMapClick = false; return; }
-      addPoint(e.latlng.lat, e.latlng.lng);
-    });
 
     function updateChips() {
       document.getElementById('count').textContent = points.length;
@@ -491,5 +496,6 @@
   </script>
 </body>
 </html>
+
 
 
