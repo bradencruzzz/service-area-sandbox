@@ -24,12 +24,14 @@
     .muted { color:#666; font-size:12px; }
     button { cursor:pointer; }
 
+    /* Search UI */
     .search-row { display:flex; gap:6px; }
     .search-row input { flex:1; padding:6px 8px; }
     .results { max-height: 180px; overflow:auto; margin-top:6px; border:1px solid #ddd; border-radius:6px; display:none; }
     .result-item { padding:6px 8px; cursor:pointer; }
     .result-item:hover { background:#f3f6ff; }
 
+    /* Tooltip + label controls */
     .leaflet-tooltip.label-tip {
       background: rgba(255,255,255,0.98);
       border: 1px solid #cfd8dc;
@@ -38,9 +40,17 @@
       border-radius: 6px;
       padding: 2px 6px;
       font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      text-align: center;              /* keep centered */
+      user-select: none;               /* avoid accidental selection */
     }
-    .label-row { display:flex; align-items:center; gap:6px; max-width:240px; }
-    .label-text { max-width: 180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .label-row {
+      display:flex; align-items:center; gap:6px;
+      justify-content:center;          /* keep centered */
+      max-width:240px;
+    }
+    .label-text {
+      max-width: 180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
     .label-btn {
       outline: none; border: 1px solid #cfd8dc; background:#f8f9fb; padding:0 4px; height:18px;
       border-radius: 3px; line-height:16px; font-size:11px;
@@ -60,9 +70,10 @@
 
     <div class="row">
       <b>How to:</b> Click the map to add a plant (max 10). Drag markers to move.
-      Click <b>✎</b> to rename and <b>×</b> to remove a point.
+      Use <b>✎</b> to rename and <b>×</b> to remove a point.
     </div>
 
+    <!-- Search -->
     <div class="row">
       <div class="search-row">
         <input id="searchInput" placeholder="Address or lat,lon (e.g. 37.59, -77.48)" />
@@ -72,6 +83,7 @@
       <div class="muted">Search via Worker → Google Places (US-biased). Lat,lon always supported.</div>
     </div>
 
+    <!-- Time + bands -->
     <div class="row">
       <label>Time of day: <span id="timeLabel">09:00</span></label><br/>
       <input id="timeSlider" type="range" min="0" max="1439" value="540" step="1" style="width:100%">
@@ -106,11 +118,13 @@
     const map = L.map('map').setView([37.95, -77.5], 8);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
 
+    // State
     const maxPoints = 10;
     let points = []; // {id, lat, lng, marker, label}
     let labelCounter = 1;
     const layersByBand = {30:null,45:null,60:null};
 
+    // Band styles
     const fillStyles = {
       30: { color: '#3498db', weight: 1.2, fillColor: '#3498db', fillOpacity: 0.35 },
       45: { color: '#f39c12', weight: 1.2, fillColor: '#f39c12', fillOpacity: 0.25 },
@@ -119,7 +133,7 @@
 
     const makeId = () => Math.random().toString(36).slice(2,9);
 
-    // Label UI
+    // Label UI HTML
     function labelHtml(text, id) {
       return `
         <div class="label-row" data-id="${id}">
@@ -136,24 +150,41 @@
           <button class="label-btn cancel" title="Cancel">Cancel</button>
         </div>`;
     }
+
+    // STOP all bubbling from tooltip to map
+    function suppressEvents(el) {
+      const stop = (e) => { e.stopPropagation(); e.preventDefault(); };
+      ["pointerdown","mousedown","click","dblclick","contextmenu","touchstart"].forEach(evt => {
+        el.addEventListener(evt, stop);
+      });
+    }
+
     function wireLabelEvents(marker, point) {
-      const tt = marker.getTooltip(); if (!tt) return;
+      const tt = marker.getTooltip();
+      if (!tt) return;
+
       marker.on('tooltipopen', () => {
-        const el = tt.getElement(); if (!el) return;
-        el.addEventListener('mousedown', e => e.stopPropagation());
-        el.addEventListener('click', e => e.stopPropagation());
+        const el = tt.getElement();
+        if (!el) return;
+
+        // Prevent map clicks from tooltip interactions
+        suppressEvents(el);
+
         const renameBtn = el.querySelector('.label-btn.rename');
-        const delBtn = el.querySelector('.label-btn.del');
+        const delBtn    = el.querySelector('.label-btn.del');
+
         if (renameBtn) {
-          renameBtn.onclick = (ev) => {
-            ev.stopPropagation();
+          const onRename = (ev) => {
+            ev.stopPropagation(); ev.preventDefault();
             marker.setTooltipContent(labelEditorHtml(point.label, point.id));
             marker.dragging.disable();
             marker.openTooltip();
             const editor = marker.getTooltip().getElement();
-            const input = editor.querySelector('.label-input');
-            const saveBtn = editor.querySelector('.label-btn.save');
-            const cancelBtn = editor.querySelector('.label-btn.cancel');
+            suppressEvents(editor); // also suppress on editor UI
+            const input    = editor.querySelector('.label-input');
+            const saveBtn  = editor.querySelector('.label-btn.save');
+            const cancelBtn= editor.querySelector('.label-btn.cancel');
+
             const commit = () => {
               const newLabel = (input.value || '').trim() || ('Point ' + point.id.slice(0,3));
               point.label = newLabel;
@@ -169,19 +200,36 @@
               marker.openTooltip();
               wireLabelEvents(marker, point);
             };
+
             input.addEventListener('keydown', (e) => {
-              if (e.key === 'Enter') commit();
-              else if (e.key === 'Escape') cancel();
+              if (e.key === 'Enter') { e.preventDefault(); commit(); }
+              else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
             });
             input.addEventListener('blur', commit);
-            saveBtn.onclick = commit;
-            cancelBtn.onclick = cancel;
+            saveBtn.addEventListener('click', (e)=>{ e.stopPropagation(); e.preventDefault(); commit(); });
+            cancelBtn.addEventListener('click', (e)=>{ e.stopPropagation(); e.preventDefault(); cancel(); });
+
             input.focus(); input.select();
           };
+          renameBtn.addEventListener('click', onRename);
+          renameBtn.addEventListener('pointerdown', (e)=>{ e.stopPropagation(); });
+          renameBtn.addEventListener('mousedown', (e)=>{ e.stopPropagation(); });
+          renameBtn.addEventListener('contextmenu', (e)=>{ e.preventDefault(); e.stopPropagation(); });
         }
-        if (delBtn) delBtn.onclick = () => removePointById(point.id);
+
+        if (delBtn) {
+          const onDelete = (ev) => {
+            ev.stopPropagation(); ev.preventDefault();
+            removePointById(point.id);
+          };
+          delBtn.addEventListener('click', onDelete);
+          delBtn.addEventListener('pointerdown', (e)=>{ e.stopPropagation(); });
+          delBtn.addEventListener('mousedown', (e)=>{ e.stopPropagation(); });
+          delBtn.addEventListener('contextmenu', (e)=>{ e.preventDefault(); e.stopPropagation(); });
+        }
       });
     }
+
     function attachLabel(marker, point) {
       marker.bindTooltip(
         labelHtml(point.label, point.id),
@@ -191,6 +239,7 @@
       wireLabelEvents(marker, point);
     }
 
+    // Points
     function addPoint(lat, lng, preferredLabel) {
       if (points.length >= maxPoints) { alert('Max 10 points'); return null; }
       const id = makeId();
@@ -199,21 +248,29 @@
         label: preferredLabel || `Point ${labelCounter++}`,
         marker: L.marker([lat, lng], { draggable:true }).addTo(map)
       };
-      point.marker.on('click', () => point.marker.openTooltip());
+
+      // Marker click: open label, no deletion
+      point.marker.on('click', (e) => { e.originalEvent?.stopPropagation?.(); point.marker.openTooltip(); });
+
+      // Update on drag
       point.marker.on('dragend', (ev) => {
         const { lat, lng } = ev.target.getLatLng();
         point.lat = lat; point.lng = lng;
         updateChips();
       });
+
       attachLabel(point.marker, point);
       points.push(point);
       updateChips();
       return point;
     }
+
     function removePointById(id) {
       const idx = points.findIndex(p => p.id === id);
       if (idx >= 0) { points[idx].marker.remove(); points.splice(idx, 1); updateChips(); }
     }
+
+    // Map click adds point – but only if click bubbles (tooltips now suppress it)
     map.on('click', (e) => addPoint(e.latlng.lat, e.latlng.lng));
 
     function updateChips() {
@@ -229,32 +286,40 @@
       });
     }
 
-    // Time + bands + recalc (unchanged)
+    // Time + bands + recalc
     const timeSlider = document.getElementById('timeSlider');
     const timeLabel  = document.getElementById('timeLabel');
     const minutesToHM = m => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
     timeLabel.textContent = minutesToHM(+timeSlider.value);
     timeSlider.oninput = () => timeLabel.textContent = minutesToHM(+timeSlider.value);
+
     const selectedBands = () =>
       Array.from(document.querySelectorAll('.band:checked')).map(b => +b.value).sort((a,b)=>a-b);
+
     const buildISOForToday = (mins) => {
       const now = new Date();
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(mins/60), mins%60, 0);
       return d.toISOString();
     };
+
     document.getElementById('recalcBtn').onclick = recalc;
+
     async function recalc() {
       const status = document.getElementById('status');
       if (points.length === 0) { status.textContent = 'Add points first.'; return; }
-      const bands = selectedBands(); status.textContent = 'Computing…';
+      const bands = selectedBands();
+      status.textContent = 'Computing…';
+
       try {
         const body = {
           arrivals: points.map(p => ({lat:p.lat, lng:p.lng})),
           minutes: bands,
           iso: buildISOForToday(+timeSlider.value)
         };
+
         const r = await fetch(WORKER_URL, {
-          method: "POST", headers: {"Content-Type":"application/json"},
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
           body: JSON.stringify(body)
         });
         if (!r.ok) throw new Error(await r.text());
@@ -270,8 +335,10 @@
             byBand[band].push(turf.polygon([shell, ...holes]));
           }
         }
+
         const unions = {};
         for (const m of bands) unions[m] = byBand[m].length ? byBand[m].reduce((a,b)=>turf.union(a,b)) : null;
+
         const rings = {};
         const u30 = unions[30]||null, u45 = unions[45]||null, u60 = unions[60]||null;
         rings[30] = u30 || null;
@@ -279,13 +346,16 @@
         rings[60] = (u60 && u45) ? turf.difference(u60, u45) : (u60||null);
 
         [30,45,60].forEach(m => { if (layersByBand[m]) { map.removeLayer(layersByBand[m]); layersByBand[m] = null; }});
+
         const ensurePane = (name, z) => { if (!map.getPane(name)) map.createPane(name); map.getPane(name).style.zIndex = z; };
         ensurePane('pane60', 1001); ensurePane('pane45', 1002); ensurePane('pane30', 1003);
+
         for (const m of [60,45,30]) {
           if (!bands.includes(m)) continue;
           const g = rings[m]; if (!g) continue;
           layersByBand[m] = L.geoJSON(g, { style: fillStyles[m], pane: `pane${m}` }).addTo(map);
         }
+
         const visibles = [30,45,60].map(m => layersByBand[m]).filter(Boolean);
         if (visibles.length) {
           try {
@@ -294,11 +364,15 @@
             map.fitBounds(b.pad(0.05));
           } catch(e){}
         }
+
         status.textContent = 'Done.';
-      } catch (e) { console.error(e); status.textContent = 'Error. See console.'; }
+      } catch (e) {
+        console.error(e);
+        status.textContent = 'Error. See console.';
+      }
     }
 
-    // ---- Search (Worker-powered Google Places) ----
+    // ===== Search via Worker (Google Places proxied) =====
     const searchInput = document.getElementById('searchInput');
     const searchBtn   = document.getElementById('searchBtn');
     const resultsBox  = document.getElementById('searchResults');
@@ -311,15 +385,12 @@
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
       return { lat, lng };
     }
-    const debounce = (fn, ms) => {
-      let t=null; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); };
-    };
+    const debounce = (fn, ms) => { let t=null; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
 
     function mapBBox() {
       const b = map.getBounds();
       return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(",");
     }
-
     async function workerAutocomplete(q) {
       const params = new URLSearchParams({ input: q, bbox: mapBBox(), session: crypto.randomUUID?.() || String(Date.now()) });
       const res = await fetch(`${WORKER_URL.replace(/\/$/,'')}/places/autocomplete?${params}`);
@@ -333,7 +404,6 @@
       const data = await res.json();
       return data.result || null;
     }
-
     function showResults(preds) {
       if (!Array.isArray(preds) || preds.length === 0) {
         resultsBox.innerHTML = '<div class="result-item muted">No results</div>';
@@ -345,7 +415,8 @@
         const div = document.createElement('div');
         div.className = 'result-item';
         div.textContent = p.description;
-        div.onclick = async () => {
+        div.onclick = async (e) => {
+          e.stopPropagation(); e.preventDefault();
           try {
             const det = await workerDetails(p.place_id);
             if (det && Number.isFinite(det.lat) && Number.isFinite(det.lng)) {
@@ -354,13 +425,12 @@
             resultsBox.style.display = 'none';
             resultsBox.innerHTML = '';
             searchInput.value = '';
-          } catch(e){ console.error(e); }
+          } catch(err){ console.error(err); }
         };
         resultsBox.appendChild(div);
       });
       resultsBox.style.display = 'block';
     }
-
     const typeahead = debounce(async () => {
       const q = searchInput.value.trim();
       resultsBox.innerHTML = '';
@@ -377,7 +447,6 @@
         resultsBox.style.display = 'block';
       }
     }, 300);
-
     searchInput.addEventListener('input', typeahead);
     searchInput.addEventListener('focus', () => { if (resultsBox.innerHTML) resultsBox.style.display = 'block'; });
     document.addEventListener('click', (e) => {
@@ -385,7 +454,6 @@
         resultsBox.style.display = 'none';
       }
     });
-
     async function doSearch() {
       const q = searchInput.value.trim(); if (!q) return;
       const coords = parseLatLon(q);
@@ -412,6 +480,4 @@
   </script>
 </body>
 </html>
-
-
 
